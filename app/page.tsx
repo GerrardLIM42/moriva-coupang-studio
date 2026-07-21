@@ -11,7 +11,8 @@ import {
   useState,
 } from "react";
 
-type BucketKey = "product" | "competitor" | "review";
+type BucketKey = "product" | "competitorThumbnail" | "competitorDetail" | "review";
+type AiStatus = "checking" | "connected" | "missing" | "error";
 type OutputTab = "thumbnail" | "detail" | "copy";
 type ImageFormat = "thumbnail" | "detail";
 
@@ -85,15 +86,22 @@ const BUCKETS: Record<
     description: "정면·측면·구성품·사용 장면을 올려주세요.",
     accent: "violet",
   },
-  competitor: {
+  competitorThumbnail: {
     step: "02",
-    eyebrow: "벤치마크",
-    title: "경쟁사 이미지",
-    description: "상위 판매자의 썸네일과 상세페이지를 올려주세요.",
+    eyebrow: "썸네일 벤치마크",
+    title: "경쟁사 썸네일",
+    description: "상위 판매자의 검색 썸네일만 올려주세요.",
     accent: "blue",
   },
-  review: {
+  competitorDetail: {
     step: "03",
+    eyebrow: "상세 벤치마크",
+    title: "경쟁사 상세페이지",
+    description: "상위 판매자의 상세페이지 이미지만 올려주세요.",
+    accent: "violet",
+  },
+  review: {
+    step: "04",
     eyebrow: "고객 언어",
     title: "리뷰 스크린샷",
     description: "스크린샷을 올리거나 필요한 리뷰 문구만 복사해 붙여넣으세요.",
@@ -126,8 +134,9 @@ async function optimizeImage(file: File, bucket: BucketKey): Promise<ImageAsset>
   image.src = source;
   await image.decode();
 
-  const maxWidth = bucket === "review" ? 1440 : 1400;
-  const maxHeight = bucket === "review" ? 5000 : 1400;
+  const isLongImage = bucket === "review" || bucket === "competitorDetail";
+  const maxWidth = isLongImage ? 1440 : 1400;
+  const maxHeight = isLongImage ? 5000 : 1400;
   const ratio = Math.min(1, maxWidth / image.width, maxHeight / image.height);
   const width = Math.max(1, Math.round(image.width * ratio));
   const height = Math.max(1, Math.round(image.height * ratio));
@@ -139,7 +148,7 @@ async function optimizeImage(file: File, bucket: BucketKey): Promise<ImageAsset>
   context.fillStyle = "#fff";
   context.fillRect(0, 0, width, height);
   context.drawImage(image, 0, 0, width, height);
-  const dataUrl = canvas.toDataURL("image/jpeg", bucket === "review" ? 0.82 : 0.8);
+  const dataUrl = canvas.toDataURL("image/jpeg", isLongImage ? 0.82 : 0.8);
 
   return {
     id: makeId(),
@@ -189,7 +198,8 @@ function demoResult(
       target_customer: "리뷰와 사용 장면을 기반으로 자동 추론",
       evidence_notes: [
         `내 제품 사진 ${counts.product}장`,
-        `경쟁사 이미지 ${counts.competitor}장`,
+        `경쟁사 썸네일 ${counts.competitorThumbnail}장`,
+        `경쟁사 상세페이지 ${counts.competitorDetail}장`,
         `리뷰 스크린샷 ${counts.review}장`,
         ...(reviewTextLength ? [`복사한 리뷰 문구 ${reviewTextLength.toLocaleString("ko-KR")}자`] : []),
       ],
@@ -211,7 +221,7 @@ function demoResult(
     thumbnails: Array.from({ length: thumbnailCount }, (_, index) => ({
       title: [`제품 집중 메인컷`, `핵심 기능 시연컷`, `구성·혜택 강조컷`][index] ?? `썸네일 변형 ${index + 1}`,
       goal: index === 0 ? "검색 결과에서 제품 형태와 품질을 즉시 인지" : "핵심 사용 이점을 한 장면으로 전달",
-      prompt: `@이미지 만들기\n\n쿠팡 로켓그로스용 1:1 상품 썸네일을 제작한다.\n\n${productReference}\n경쟁사 이미지 ${counts.competitor}장의 시선 흐름과 정보 밀도만 참고하고, 브랜드·문구·배치·그래픽은 독창적으로 재구성한다.\n\n[연출 방향 ${index + 1}]\n- ${index === 0 ? "제품 전체 형태가 가장 명확한 3/4 스튜디오 메인컷" : index === 1 ? "제품의 핵심 기능이 실제 사용되는 순간을 보여주는 라이프스타일 컷" : "제품과 구성품을 균형 있게 배열한 가치 제안 컷"}\n- 밝고 깨끗한 한국형 커머스 사진, 선명한 초점, 자연스러운 접지 그림자\n- 제품이 프레임 밖으로 잘리지 않게 전체 노출\n- 최종 비율 1:1, 1080×1080px\n- 한국어 문구는 생성 이미지에 직접 넣지 말고 텍스트 안전 여백 확보\n\n[금지]\n제품 디자인 변경, 부품 추가·삭제, 로고 왜곡, 존재하지 않는 기능 표현, 경쟁사 레이아웃 복제, 중국어·임의 문자 생성.`,
+      prompt: `@이미지 만들기\n\n쿠팡 로켓그로스용 1:1 상품 썸네일을 제작한다.\n\n${productReference}\n경쟁사 썸네일 ${counts.competitorThumbnail}장의 제품 크기·구도·시선 집중 방식만 참고하고, 브랜드·문구·배치·그래픽은 독창적으로 재구성한다.\n\n[연출 방향 ${index + 1}]\n- ${index === 0 ? "제품 전체 형태가 가장 명확한 3/4 스튜디오 메인컷" : index === 1 ? "제품의 핵심 기능이 실제 사용되는 순간을 보여주는 라이프스타일 컷" : "제품과 구성품을 균형 있게 배열한 가치 제안 컷"}\n- 밝고 깨끗한 한국형 커머스 사진, 선명한 초점, 자연스러운 접지 그림자\n- 제품이 프레임 밖으로 잘리지 않게 전체 노출\n- 최종 비율 1:1, 1080×1080px\n- 한국어 문구는 생성 이미지에 직접 넣지 말고 텍스트 안전 여백 확보\n\n[금지]\n제품 디자인 변경, 부품 추가·삭제, 로고 왜곡, 존재하지 않는 기능 표현, 경쟁사 레이아웃 복제, 중국어·임의 문자 생성.`,
     })),
     detail_sections: sections.map(([title, headline], index) => ({
       number: index + 1,
@@ -612,7 +622,7 @@ function OutputPanel({
 }
 
 export default function Home() {
-  const [images, setImages] = useState<Record<BucketKey, ImageAsset[]>>({ product: [], competitor: [], review: [] });
+  const [images, setImages] = useState<Record<BucketKey, ImageAsset[]>>({ product: [], competitorThumbnail: [], competitorDetail: [], review: [] });
   const [activeBucket, setActiveBucket] = useState<BucketKey>("product");
   const [reviewText, setReviewText] = useState("");
   const [processing, setProcessing] = useState<BucketKey | null>(null);
@@ -622,18 +632,32 @@ export default function Home() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [generating, setGenerating] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [aiStatus, setAiStatus] = useState<AiStatus>("checking");
 
   const counts = useMemo(() => ({
     product: images.product.length,
-    competitor: images.competitor.length,
+    competitorThumbnail: images.competitorThumbnail.length,
+    competitorDetail: images.competitorDetail.length,
     review: images.review.length,
   }), [images]);
-  const totalCount = counts.product + counts.competitor + counts.review;
+  const totalCount = counts.product + counts.competitorThumbnail + counts.competitorDetail + counts.review;
   const ready = counts.product > 0;
 
   const showNotice = useCallback((message: string) => {
     setNotice(message);
     window.setTimeout(() => setNotice(null), 3200);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/analyze", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("status");
+        const data = (await response.json()) as { connected?: boolean };
+        if (active) setAiStatus(data.connected ? "connected" : "missing");
+      })
+      .catch(() => { if (active) setAiStatus("error"); });
+    return () => { active = false; };
   }, []);
 
   const addFiles = useCallback(async (bucket: BucketKey, files: File[]) => {
@@ -701,21 +725,27 @@ export default function Home() {
         body: JSON.stringify({
           images: {
             product: images.product.map((item) => item.dataUrl),
-            competitor: images.competitor.map((item) => item.dataUrl),
+            competitorThumbnail: images.competitorThumbnail.map((item) => item.dataUrl),
+            competitorDetail: images.competitorDetail.map((item) => item.dataUrl),
             review: images.review.map((item) => item.dataUrl),
           },
           reviewText,
           settings: { tone, sectionCount, thumbnailCount, width: 780 },
         }),
       });
-      if (!response.ok) throw new Error(String(response.status));
-      const data = (await response.json()) as AnalysisResult;
+      const data = (await response.json()) as AnalysisResult & { code?: string; error?: string };
+      if (!response.ok) {
+        if (data.code === "NO_API_KEY") setAiStatus("missing");
+        else setAiStatus("error");
+        throw new Error(data.code === "NO_API_KEY" ? "OPENAI_API_KEY가 등록되지 않았습니다." : data.error || `AI 요청 오류 (${response.status})`);
+      }
+      setAiStatus("connected");
       setResult({ ...data, mode: "ai" });
       window.setTimeout(() => document.querySelector("#results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
-    } catch {
+    } catch (error) {
       const fallback = demoResult(counts, reviewText.trim().length, sectionCount, thumbnailCount, tone);
       setResult(fallback);
-      showNotice("AI 연결 전 데모 프롬프트를 만들었습니다.");
+      showNotice(error instanceof Error ? `${error.message} 데모 프롬프트를 만들었습니다.` : "AI 요청에 실패해 데모 프롬프트를 만들었습니다.");
       window.setTimeout(() => document.querySelector("#results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
     } finally {
       setGenerating(false);
@@ -755,7 +785,7 @@ export default function Home() {
               <div><span>MORIVA BRAND PROMISE</span><strong>Better Life, Better Move</strong><p>브랜드 컬러와 제품 디테일을 일관되게 유지합니다.</p></div>
             </div>
             <div className="workflow-card" aria-label="작업 흐름">
-              <div><span>1</span><strong>이미지 첨부</strong><small>최대 60장</small></div>
+              <div><span>1</span><strong>이미지 첨부</strong><small>영역별 최대 20장</small></div>
               <i>→</i>
               <div><span>2</span><strong>AI 제품 읽기</strong><small>특징·리뷰 분석</small></div>
               <i>→</i>
@@ -791,6 +821,14 @@ export default function Home() {
 
           <aside className="control-panel">
             <div className="panel-heading"><span>STEP 02</span><h2>생성 설정</h2><p>제품에 맞는 결과 형식을 고르세요.</p></div>
+
+            <div className={`ai-status ai-${aiStatus}`}>
+              <span></span>
+              <div>
+                <strong>{aiStatus === "connected" ? "AI 연결 완료" : aiStatus === "missing" ? "AI 키 미등록" : aiStatus === "error" ? "AI 연결 확인 필요" : "AI 연결 확인 중"}</strong>
+                <small>{aiStatus === "connected" ? "OpenAI 이미지 분석을 사용할 수 있습니다." : aiStatus === "missing" ? "Vercel 환경 변수에 OPENAI_API_KEY를 등록하세요." : aiStatus === "error" ? "키·모델·배포 설정을 확인하세요." : "배포 환경을 확인하고 있습니다."}</small>
+              </div>
+            </div>
 
             <div className="control-group">
               <label>콘텐츠 방향</label>

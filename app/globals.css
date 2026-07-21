@@ -113,6 +113,11 @@ button:focus-visible, select:focus-visible, [role="button"]:focus-visible { outl
 .soft-button { margin-left:auto; border:1px solid #e2e4eb; background:#fff; border-radius:9px; padding:9px 12px; font-size:10px; font-weight:700; cursor:pointer; box-shadow:0 2px 6px rgba(40,48,78,.03); white-space:nowrap; }
 .soft-button:disabled { opacity:.5; }
 .review-text-box { margin-top:12px; border:1px solid rgba(201,150,26,.25); background:linear-gradient(145deg,#fffdf8,#fbfaf6); border-radius:15px; padding:15px; }
+.ai-status { display:flex; align-items:center; gap:10px; margin:0 0 18px; padding:12px 14px; border:1px solid #e3e7ec; border-radius:12px; background:#f8fafb; }
+.ai-status > span { width:9px; height:9px; flex:0 0 auto; border-radius:50%; background:#aeb5bf; box-shadow:0 0 0 4px rgba(174,181,191,.14); }
+.ai-status > div { display:flex; flex-direction:column; gap:2px; }.ai-status strong { color:var(--navy); font-size:10px; }.ai-status small { color:#7f8795; font-size:8px; line-height:1.45; }
+.ai-status.ai-connected { border-color:rgba(31,145,91,.25); background:#f4fbf7; }.ai-status.ai-connected > span { background:#1f915b; box-shadow:0 0 0 4px rgba(31,145,91,.13); }
+.ai-status.ai-missing,.ai-status.ai-error { border-color:rgba(201,150,26,.3); background:#fffaf0; }.ai-status.ai-missing > span,.ai-status.ai-error > span { background:var(--amber); box-shadow:0 0 0 4px rgba(201,150,26,.14); }
 .review-text-head { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; margin-bottom:10px; }
 .review-text-head > div { display:flex; flex-direction:column; gap:3px; }
 .review-text-head > div span { color:#9a6d08; font-size:8px; font-weight:800; letter-spacing:.13em; }

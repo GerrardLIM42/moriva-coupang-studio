@@ -3,7 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 type AnalyzeBody = {
   images?: {
     product?: string[];
-    competitor?: string[];
+    competitorThumbnail?: string[];
+    competitorDetail?: string[];
     review?: string[];
   };
   reviewText?: string;
@@ -121,7 +122,8 @@ export async function POST(request: NextRequest) {
   }
 
   const product = (body.images?.product ?? []).filter(validDataUrl).slice(0, MAX_IMAGES_PER_BUCKET);
-  const competitor = (body.images?.competitor ?? []).filter(validDataUrl).slice(0, MAX_IMAGES_PER_BUCKET);
+  const competitorThumbnail = (body.images?.competitorThumbnail ?? []).filter(validDataUrl).slice(0, MAX_IMAGES_PER_BUCKET);
+  const competitorDetail = (body.images?.competitorDetail ?? []).filter(validDataUrl).slice(0, MAX_IMAGES_PER_BUCKET);
   const review = (body.images?.review ?? []).filter(validDataUrl).slice(0, MAX_IMAGES_PER_BUCKET);
   const reviewText = typeof body.reviewText === "string" ? body.reviewText.trim().slice(0, 12000) : "";
   if (!product.length) return NextResponse.json({ error: "제품 사진이 필요합니다." }, { status: 400 });
@@ -134,8 +136,9 @@ export async function POST(request: NextRequest) {
 
 사용자가 첨부한 이미지를 세 그룹으로 구분해 분석한다.
 1) 내 제품 사진: 제품명/카테고리/색상/소재/구조/구성품/사용 방식의 사실 근거다.
-2) 경쟁사 이미지: 정보 순서, 시선 흐름, 강조 방식만 벤치마킹한다. 문구·레이아웃·브랜드·그래픽을 복제하지 않는다.
-3) 리뷰 스크린샷 및 사용자가 복사한 리뷰 문구: 반복 호평, 불편, 오해, 구매 전 질문을 읽고 상세페이지 설득 근거로 변환한다. 개인 리뷰를 길게 인용하지 않는다.
+2) 경쟁사 썸네일: 검색 결과에서의 제품 크기, 구도, 시선 집중 방식만 썸네일 기획에 벤치마킹한다.
+3) 경쟁사 상세페이지: 정보 순서, 섹션 흐름, 강조 방식만 상세페이지 기획에 벤치마킹한다. 문구·레이아웃·브랜드·그래픽을 복제하지 않는다.
+4) 리뷰 스크린샷 및 사용자가 복사한 리뷰 문구: 반복 호평, 불편, 오해, 구매 전 질문을 읽고 상세페이지 설득 근거로 변환한다. 개인 리뷰를 길게 인용하지 않는다.
 
 핵심 규칙:
 - 이미지에서 명확히 확인되지 않는 소재·수치·인증·성능은 단정하지 말고 uncertainties 또는 warnings에 넣는다.
@@ -157,9 +160,13 @@ export async function POST(request: NextRequest) {
     },
     ...imageItems(product, "high"),
   ];
-  if (competitor.length) {
-    content.push({ type: "input_text", text: `다음은 경쟁사 썸네일·상세페이지 이미지 ${competitor.length}장이다. 복제가 아니라 설득 구조만 분석하라.` });
-    content.push(...imageItems(competitor, "high"));
+  if (competitorThumbnail.length) {
+    content.push({ type: "input_text", text: `다음은 경쟁사 썸네일 ${competitorThumbnail.length}장이다. 검색 결과에서의 제품 크기, 구도, 시선 집중 방식만 썸네일 기획에 참고하라.` });
+    content.push(...imageItems(competitorThumbnail, "high"));
+  }
+  if (competitorDetail.length) {
+    content.push({ type: "input_text", text: `다음은 경쟁사 상세페이지 ${competitorDetail.length}장이다. 복제가 아니라 정보 순서와 섹션별 설득 구조만 상세페이지 기획에 참고하라.` });
+    content.push(...imageItems(competitorDetail, "high"));
   }
   if (review.length) {
     content.push({ type: "input_text", text: `다음은 상위 판매자 리뷰 스크린샷 ${review.length}장이다. 반복 표현과 구매 장벽을 상세페이지 카피에 반영하라.` });
@@ -194,7 +201,7 @@ export async function POST(request: NextRequest) {
     if (!response.ok) {
       const detail = await response.text();
       console.error("OpenAI response error", response.status, detail.slice(0, 500));
-      return NextResponse.json({ error: "이미지 분석에 실패했습니다." }, { status: 502 });
+      return NextResponse.json({ code: "OPENAI_ERROR", error: "OpenAI 이미지 분석 요청에 실패했습니다." }, { status: 502 });
     }
     const payload = (await response.json()) as Record<string, unknown>;
     const outputText = extractOutputText(payload);
@@ -204,4 +211,8 @@ export async function POST(request: NextRequest) {
     console.error("Analyze route failed", error);
     return NextResponse.json({ error: "이미지 분석 중 오류가 발생했습니다." }, { status: 500 });
   }
+}
+
+export async function GET() {
+  return NextResponse.json({ connected: Boolean(process.env.OPENAI_API_KEY) });
 }
