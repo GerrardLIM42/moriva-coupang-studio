@@ -66,7 +66,7 @@ type AnalysisResult = {
 const MAX_IMAGES = 20;
 // Vercel Functions accept request bodies up to 4.5 MB. Base64 adds roughly 33%,
 // so the optimized source images stay below this raw-byte budget.
-const MAX_TOTAL_BYTES = 2.7 * 1024 * 1024;
+const MAX_TOTAL_BYTES = 3.15 * 1024 * 1024;
 const MAX_REVIEW_TEXT = 12000;
 
 const BUCKETS: Record<
@@ -135,27 +135,41 @@ async function optimizeImage(file: File, bucket: BucketKey): Promise<ImageAsset>
   await image.decode();
 
   const isLongImage = bucket === "review" || bucket === "competitorDetail";
-  const maxWidth = isLongImage ? 1440 : 1400;
-  const maxHeight = isLongImage ? 5000 : 1400;
+  const maxWidth = isLongImage ? 1100 : 1100;
+  const maxHeight = isLongImage ? 3200 : 1100;
   const ratio = Math.min(1, maxWidth / image.width, maxHeight / image.height);
   const width = Math.max(1, Math.round(image.width * ratio));
   const height = Math.max(1, Math.round(image.height * ratio));
   const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("이미지를 처리하지 못했습니다.");
-  context.fillStyle = "#fff";
-  context.fillRect(0, 0, width, height);
-  context.drawImage(image, 0, 0, width, height);
-  const dataUrl = canvas.toDataURL("image/jpeg", isLongImage ? 0.82 : 0.8);
+  let outputWidth = width;
+  let outputHeight = height;
+  let quality = isLongImage ? 0.72 : 0.7;
+  const targetBytes = (isLongImage ? 120 : 90) * 1024;
+  canvas.width = outputWidth;
+  canvas.height = outputHeight;
+  let dataUrl = "";
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
+    const nextContext = canvas.getContext("2d");
+    if (!nextContext) throw new Error("이미지를 처리하지 못했습니다.");
+    nextContext.fillStyle = "#fff";
+    nextContext.fillRect(0, 0, outputWidth, outputHeight);
+    nextContext.drawImage(image, 0, 0, outputWidth, outputHeight);
+    dataUrl = canvas.toDataURL("image/jpeg", quality);
+    const encodedBytes = Math.ceil((dataUrl.length * 3) / 4);
+    if (encodedBytes <= targetBytes) break;
+    outputWidth = Math.max(420, Math.round(outputWidth * 0.84));
+    outputHeight = Math.max(420, Math.round(outputHeight * 0.84));
+    quality = Math.max(0.44, quality - 0.07);
+  }
 
   return {
     id: makeId(),
     name: file.name || `붙여넣은 이미지 ${new Date().toLocaleTimeString("ko-KR")}`,
     dataUrl,
-    width,
-    height,
+    width: outputWidth,
+    height: outputHeight,
     size: Math.ceil((dataUrl.length * 3) / 4),
   };
 }
@@ -678,7 +692,7 @@ export default function Home() {
       const optimized = await Promise.all(selected.map((file) => optimizeImage(file, bucket)));
       const next = { ...images, [bucket]: [...images[bucket], ...optimized] };
       if (totalBytes(next) > MAX_TOTAL_BYTES) {
-        showNotice("전송 가능한 이미지 용량을 넘었습니다. 긴 스크린샷을 나누거나 일부 이미지를 줄여주세요.");
+        showNotice("전체 분석 한도를 넘었습니다. 긴 상세페이지를 여러 화면으로 자르기보다 필요한 핵심 구간만 첨부해주세요.");
         return;
       }
       setImages(next);
