@@ -4,6 +4,7 @@ type GenerateImageBody = {
   prompt?: string;
   format?: "thumbnail" | "detail";
   productImages?: string[];
+  brandImage?: string;
 };
 
 function validDataUrl(value: unknown): value is string {
@@ -33,11 +34,12 @@ export async function POST(request: NextRequest) {
 
   const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
   const images = (body.productImages ?? []).filter(validDataUrl).slice(0, 4);
+  const brandImage = validDataUrl(body.brandImage) ? body.brandImage : null;
   if (!prompt || !images.length) return NextResponse.json({ error: "프롬프트와 제품 사진이 필요합니다." }, { status: 400 });
 
   const form = new FormData();
   form.append("model", process.env.OPENAI_IMAGE_MODEL || "gpt-image-2");
-  form.append("prompt", `${prompt}\n\n[참조 이미지 적용 규칙]\n제공된 제품 사진은 동일한 실제 제품의 참조 이미지다. 제품의 고유 형태, 패키지 디자인, 색상, 비율, 로고, 부품 수와 위치를 최대한 정확히 보존한다. 존재하지 않는 기능이나 구성품을 만들지 않는다. MORIVA 브랜드 팔레트는 딥 네이비 #071A35, 화이트, 골드 #C9961A를 사용한다.`);
+  form.append("prompt", `${prompt}\n\n[참조 이미지 적용 규칙]\nproduct-reference 이미지는 실제 제품 및 현재 수정 대상의 기준이다. 첫 번째 이미지가 기존 생성 결과인 경우 그 구성은 유지하고 사용자가 요청한 부분만 수정한다. 제품의 고유 형태, 패키지 디자인, 색상, 비율, 부품 수와 위치를 정확히 보존하며 존재하지 않는 기능이나 구성품을 만들지 않는다. brand-reference 이미지는 MORIVA의 공식 브랜드 가이드다. 브랜드명은 영문 ‘MORIVA’, 한글 ‘모리바’, 슬로건은 ‘Better Life, Better Move’로 정확히 유지한다. 브랜드를 표시하는 장면에서는 가이드의 M 심볼과 워드마크를 왜곡·재설계·오탈자 없이 참고하고, 딥 네이비 #071A35, 화이트, 골드 #C9961A의 시각 체계를 일관되게 적용한다.`);
   form.append("size", body.format === "detail" ? "1024x1536" : "1024x1024");
   form.append("quality", "medium");
   // Vercel Functions cap response bodies at 4.5 MB. WEBP keeps generated
@@ -50,6 +52,10 @@ export async function POST(request: NextRequest) {
       const { blob, extension } = dataUrlToBlob(image);
       form.append("image[]", blob, `product-reference-${index + 1}.${extension}`);
     });
+    if (brandImage) {
+      const { blob, extension } = dataUrlToBlob(brandImage);
+      form.append("image[]", blob, `brand-reference-moriva.${extension}`);
+    }
 
     const response = await fetch("https://api.openai.com/v1/images/edits", {
       method: "POST",
@@ -62,7 +68,13 @@ export async function POST(request: NextRequest) {
     };
     if (!response.ok) {
       console.error("OpenAI image error", response.status, payload.error?.code, payload.error?.message);
-      return NextResponse.json({ error: payload.error?.message || "이미지를 만들지 못했습니다." }, { status: response.status });
+      const message = payload.error?.message || "이미지를 만들지 못했습니다.";
+      const friendly = response.status === 413
+        ? "수정 이미지 전송 용량이 너무 큽니다. 이미지를 최적화한 뒤 다시 시도해주세요."
+        : response.status === 429
+          ? "AI 이미지 사용 한도 또는 요청 속도 제한에 도달했습니다. 잠시 후 다시 시도해주세요."
+          : message;
+      return NextResponse.json({ error: friendly, code: payload.error?.code }, { status: response.status });
     }
     const base64 = payload.data?.[0]?.b64_json;
     if (!base64) return NextResponse.json({ error: "생성된 이미지를 읽지 못했습니다." }, { status: 502 });
