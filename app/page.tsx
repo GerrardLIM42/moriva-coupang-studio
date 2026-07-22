@@ -444,11 +444,52 @@ function CopyButton({ text, label = "복사" }: { text: string; label?: string }
   );
 }
 
+let brandReferencePromise: Promise<string> | null = null;
+
+async function optimizeReferenceDataUrl(dataUrl: string, maxEdge = 1400, quality = 0.76) {
+  const image = new Image();
+  image.src = dataUrl;
+  await image.decode();
+  const scale = Math.min(1, maxEdge / Math.max(image.width, image.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.width * scale));
+  canvas.height = Math.max(1, Math.round(image.height * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("수정 이미지를 최적화하지 못했습니다.");
+  context.fillStyle = "#fff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
+async function getBrandReference() {
+  if (!brandReferencePromise) {
+    brandReferencePromise = fetch("/moriva-brand-guide.png")
+      .then((response) => {
+        if (!response.ok) throw new Error("MORIVA 로고 가이드를 불러오지 못했습니다.");
+        return response.blob();
+      })
+      .then(blobToDataUrl)
+      .then((dataUrl) => optimizeReferenceDataUrl(dataUrl, 1200, 0.8))
+      .catch((error) => {
+        brandReferencePromise = null;
+        throw error;
+      });
+  }
+  return brandReferencePromise;
+}
+
 async function requestGeneratedImage(prompt: string, format: ImageFormat, references: string[]) {
+  const [brandImage, ...optimizedReferences] = await Promise.all([
+    getBrandReference(),
+    ...references.slice(0, 4).map((reference, index) =>
+      optimizeReferenceDataUrl(reference, index === 0 ? 1400 : 1100, index === 0 ? 0.78 : 0.72)
+    ),
+  ]);
   const response = await fetch("/api/generate-image", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, format, productImages: references.slice(0, 4) }),
+    body: JSON.stringify({ prompt, format, productImages: optimizedReferences, brandImage }),
   });
   const data = (await response.json()) as { image?: string; code?: string; error?: string };
   if (!response.ok || !data.image) {
@@ -1108,10 +1149,12 @@ export default function Home() {
     setGenerating(true);
     setResult(null);
     try {
+      const brandImage = await getBrandReference();
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          brandImage,
           images: {
             product: images.product.map((item) => item.dataUrl),
             competitorThumbnail: images.competitorThumbnail.map((item) => item.dataUrl),
