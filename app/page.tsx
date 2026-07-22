@@ -13,7 +13,7 @@ import {
 
 type BucketKey = "product" | "competitorThumbnail" | "competitorDetail" | "review";
 type AiStatus = "checking" | "connected" | "missing" | "error";
-type OutputTab = "thumbnail" | "detail" | "copy";
+type OutputTab = "thumbnail" | "detail" | "copy" | "gallery";
 type ImageFormat = "thumbnail" | "detail";
 
 type ImageAsset = {
@@ -411,21 +411,40 @@ function CopyButton({ text, label = "복사" }: { text: string; label?: string }
   );
 }
 
+async function requestGeneratedImage(prompt: string, format: ImageFormat, references: string[]) {
+  const response = await fetch("/api/generate-image", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, format, productImages: references.slice(0, 4) }),
+  });
+  const data = (await response.json()) as { image?: string; code?: string; error?: string };
+  if (!response.ok || !data.image) {
+    if (data.code === "NO_API_KEY") throw new Error("OPENAI_API_KEY가 연결되지 않았습니다.");
+    throw new Error(data.error || "이미지를 만들지 못했습니다.");
+  }
+  return data.image;
+}
+
 function DirectImageButton({
   prompt,
   productImages,
   format,
   title,
+  imageUrl,
+  onGenerated,
   onNotice,
 }: {
   prompt: string;
   productImages: ImageAsset[];
   format: ImageFormat;
   title: string;
+  imageUrl?: string;
+  onGenerated: (image: string) => void;
   onNotice: (message: string) => void;
 }) {
   const [loading, setLoading] = useState(false);
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const [editInstruction, setEditInstruction] = useState("");
 
   const createImage = async () => {
     if (!productImages.length) {
@@ -434,25 +453,9 @@ function DirectImageButton({
     }
     setLoading(true);
     try {
-      const response = await fetch("/api/generate-image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt,
-          format,
-          productImages: productImages.slice(0, 4).map((item) => item.dataUrl),
-        }),
-      });
-      const data = (await response.json()) as { image?: string; code?: string; error?: string };
-      if (!response.ok || !data.image) {
-        if (data.code === "NO_API_KEY") {
-          await navigator.clipboard.writeText(prompt);
-          onNotice("AI 연결 전입니다. 대신 프롬프트를 복사했습니다.");
-          return;
-        }
-        throw new Error(data.error || "이미지를 만들지 못했습니다.");
-      }
-      setImageUrl(data.image);
+      const image = await requestGeneratedImage(prompt, format, productImages.map((item) => item.dataUrl));
+      onGenerated(image);
+      setOpen(true);
     } catch (error) {
       onNotice(error instanceof Error ? error.message : "이미지 생성 중 오류가 발생했습니다.");
     } finally {
@@ -460,22 +463,47 @@ function DirectImageButton({
     }
   };
 
+  const editImage = async () => {
+    if (!imageUrl || !editInstruction.trim()) {
+      onNotice("수정할 내용을 입력해주세요.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const editPrompt = `${prompt}\n\n[기존 생성 이미지 수정]\n첫 번째 참조 이미지는 방금 생성된 결과다. 전체 구성과 제품 일관성을 유지하면서 아래 요청만 정확히 수정한다.\n- ${editInstruction.trim()}\n수정 요청과 관계없는 제품 형태·색상·로고·문구·배경은 임의로 바꾸지 않는다.`;
+      const references = [imageUrl, ...productImages.map((item) => item.dataUrl)];
+      const image = await requestGeneratedImage(editPrompt, format, references);
+      onGenerated(image);
+      setEditInstruction("");
+      onNotice("수정 이미지를 만들었습니다.");
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "이미지 수정 중 오류가 발생했습니다.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <>
-      <button type="button" className="direct-image-button" onClick={createImage} disabled={loading}>
-        <span>{loading ? "◌" : "✦"}</span>{loading ? "이미지 만드는 중" : "ChatGPT로 바로 만들기"}
+      <button type="button" className="direct-image-button" onClick={() => imageUrl ? setOpen(true) : void createImage()} disabled={loading}>
+        <span>{loading ? "◌" : imageUrl ? "✓" : "✦"}</span>{loading ? "이미지 만드는 중" : imageUrl ? "결과 보기 · 편집" : "개별 이미지 만들기"}
       </button>
-      {imageUrl && (
+      {imageUrl && open && (
         <div className="generated-modal" role="dialog" aria-modal="true" aria-label={`${title} 생성 이미지`}>
           <div className="generated-card">
             <div className="generated-card-head">
               <div><span>CHATGPT IMAGE</span><strong>{title}</strong></div>
-              <button type="button" aria-label="닫기" onClick={() => setImageUrl(null)}>×</button>
+              <button type="button" aria-label="닫기" onClick={() => setOpen(false)}>×</button>
             </div>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={imageUrl} alt={`${title} 생성 결과`} />
+            <div className="generated-edit-box">
+              <label htmlFor={`edit-${format}-${title}`}>이 이미지만 수정하기</label>
+              <textarea id={`edit-${format}-${title}`} value={editInstruction} onChange={(event) => setEditInstruction(event.target.value)} placeholder="예: 제품을 10% 크게, 헤드라인은 유지하고 배경만 밝은 거실로 변경" />
+              <button type="button" onClick={() => void editImage()} disabled={loading}>{loading ? "수정 이미지 만드는 중…" : "수정 이미지 만들기"}</button>
+            </div>
             <div className="generated-actions">
-              <p>업로드한 제품 사진을 참조해 생성했습니다. 제품 디테일을 최종 확인해주세요.</p>
+              <p>수정 결과는 현재 항목에 새 버전으로 교체됩니다.</p>
               <a href={imageUrl} download={`moriva-${format}.${imageUrl.startsWith("data:image/webp") ? "webp" : "png"}`}>
                 {imageUrl.startsWith("data:image/webp") ? "WEBP" : "PNG"} 다운로드
               </a>
@@ -498,6 +526,116 @@ function OutputPanel({
 }) {
   const [tab, setTab] = useState<OutputTab>("thumbnail");
   const [openSections, setOpenSections] = useState<number[]>([0]);
+  const [generatedThumbnails, setGeneratedThumbnails] = useState<Record<number, string>>({});
+  const [generatedDetails, setGeneratedDetails] = useState<Record<number, string>>({});
+  const [selectedDetails, setSelectedDetails] = useState<number[]>([]);
+  const [batchProgress, setBatchProgress] = useState<{ type: ImageFormat; current: number; total: number } | null>(null);
+  const [galleryEdits, setGalleryEdits] = useState<Record<string, string>>({});
+  const [galleryLoading, setGalleryLoading] = useState<string | null>(null);
+
+  const editGalleryImage = async (type: ImageFormat, index: number) => {
+    const key = `${type}-${index}`;
+    const instruction = galleryEdits[key]?.trim();
+    const currentImage = type === "thumbnail" ? generatedThumbnails[index] : generatedDetails[index];
+    const item = type === "thumbnail" ? result.thumbnails[index] : result.detail_sections[index];
+    if (!currentImage || !instruction) {
+      onNotice("수정하거나 보완할 내용을 입력해주세요.");
+      return;
+    }
+    setGalleryLoading(key);
+    try {
+      const editPrompt = `${item.prompt}\n\n[현재 생성 이미지 수정 및 프롬프트 보완]\n첫 번째 참조 이미지는 현재 생성 결과다. 전체 제품과 디자인의 일관성은 유지하고 아래 요청을 우선 반영한다.\n\n${instruction}\n\n요청하지 않은 제품 형태·색상·로고·구성품·핵심 카피는 임의로 변경하지 않는다.`;
+      const image = await requestGeneratedImage(editPrompt, type, [currentImage, ...productImages.map((product) => product.dataUrl)]);
+      if (type === "thumbnail") setGeneratedThumbnails((current) => ({ ...current, [index]: image }));
+      else setGeneratedDetails((current) => ({ ...current, [index]: image }));
+      setGalleryEdits((current) => ({ ...current, [key]: "" }));
+      onNotice("수정 요청을 반영한 새 이미지를 만들었습니다.");
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "이미지 수정 중 오류가 발생했습니다.");
+    } finally {
+      setGalleryLoading(null);
+    }
+  };
+
+  const generateAll = async (type: ImageFormat) => {
+    if (!productImages.length) {
+      onNotice("제품 사진을 먼저 첨부해주세요.");
+      return;
+    }
+    const items = type === "thumbnail" ? result.thumbnails : result.detail_sections;
+    setBatchProgress({ type, current: 0, total: items.length });
+    let completed = 0;
+    try {
+      for (let index = 0; index < items.length; index += 1) {
+        const image = await requestGeneratedImage(items[index].prompt, type, productImages.map((item) => item.dataUrl));
+        if (type === "thumbnail") {
+          setGeneratedThumbnails((current) => ({ ...current, [index]: image }));
+        } else {
+          setGeneratedDetails((current) => ({ ...current, [index]: image }));
+          setSelectedDetails((current) => current.includes(index) ? current : [...current, index]);
+        }
+        completed = index + 1;
+        setBatchProgress({ type, current: completed, total: items.length });
+      }
+      onNotice(`${type === "thumbnail" ? "썸네일" : "상세페이지"} 전체 이미지 ${completed}장을 만들었습니다.`);
+    } catch (error) {
+      onNotice(`${completed}장 생성 후 중단: ${error instanceof Error ? error.message : "이미지 생성 오류"}`);
+    } finally {
+      setBatchProgress(null);
+    }
+  };
+
+  const stitchSelectedDetails = async () => {
+    const indexes = selectedDetails.filter((index) => generatedDetails[index]).sort((a, b) => a - b);
+    if (!indexes.length) {
+      onNotice("먼저 연결할 상세페이지 이미지를 선택해주세요.");
+      return;
+    }
+    try {
+      const loaded = await Promise.all(indexes.map((index) => new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("생성 이미지를 읽지 못했습니다."));
+        image.src = generatedDetails[index];
+      })));
+      const width = 780;
+      const heights = loaded.map((image) => Math.round(image.height * (width / image.width)));
+      const totalHeight = heights.reduce((sum, height) => sum + height, 0);
+      if (totalHeight > 30000) {
+        onNotice("선택한 이미지가 너무 깁니다. 일부 섹션만 선택해 나누어 저장해주세요.");
+        return;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = totalHeight;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("긴 이미지를 만들지 못했습니다.");
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, width, totalHeight);
+      let y = 0;
+      loaded.forEach((image, index) => {
+        context.drawImage(image, 0, y, width, heights[index]);
+        y += heights[index];
+      });
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", 0.92));
+      if (!blob) throw new Error("긴 이미지를 저장하지 못했습니다.");
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `moriva-detail-page-${indexes.map((index) => index + 1).join("-")}.webp`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      onNotice(`선택한 ${indexes.length}개 섹션을 긴 이미지로 저장했습니다.`);
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : "긴 이미지 제작 중 오류가 발생했습니다.");
+    }
+  };
+  const thumbnailMasterPrompt = useMemo(() => {
+    const thumbnails = result.thumbnails.map((item, index) => (
+      `[THUMBNAIL ${String(index + 1).padStart(2, "0")} · ${item.title}]\n목표: ${item.goal}\n\n${item.prompt}`
+    )).join("\n\n━━━━━━━━━━━━━━━━━━━━\n\n");
+    return `@이미지 만들기\n\nMORIVA 쿠팡 로켓그로스 썸네일 세트를 제작한다.\n\n[공통 절대 규칙]\n- 함께 첨부한 내 제품 사진을 형태·색상·비율·부품 구조의 절대 기준으로 사용한다.\n- 제품 디자인, 로고, 패키지 문구와 구성품을 임의로 바꾸지 않는다.\n- 각 썸네일은 1:1, 1080×1080px 독립 이미지로 제작한다.\n- 경쟁사 썸네일은 제품 크기·구도·시선 집중 원리만 참고하고 브랜드·문구·배치를 복제하지 않는다.\n- 확인되지 않은 기능·수치·인증은 표현하지 않는다.\n- 정확한 한글만 사용하고 중국어·임의 문자·오탈자를 금지한다.\n\n[제작 순서]\n아래 THUMBNAIL 01부터 마지막 안까지 순서대로 각각 제작한다.\n\n${thumbnails}`;
+  }, [result]);
   const detailMasterPrompt = useMemo(() => {
     const sections = result.detail_sections.map((item) => (
       `[SECTION ${String(item.number).padStart(2, "0")} · ${item.title}]\n카피: ${item.copy_headline}\n설명: ${item.copy_body}\n\n${item.prompt}`
@@ -505,10 +643,10 @@ function OutputPanel({
     return `@이미지 만들기\n\nMORIVA 쿠팡 로켓그로스 상세페이지 전체를 제작한다.\n\n[공통 절대 규칙]\n- 함께 첨부한 내 제품 사진을 제품 형태·색상·비율·부품 구조의 절대 기준으로 사용한다.\n- 제품 디자인, 로고, 패키지 문구와 구성품을 임의로 바꾸지 않는다.\n- 브랜드 팔레트: 딥 네이비 #071A35 / 화이트 / 골드 #C9961A.\n- 모든 섹션은 폭 780px 기준으로 제작하고 모바일 가독성을 우선한다.\n- 섹션별 이미지는 각각 독립 파일로 제작하되 위에서 아래로 연결했을 때 하나의 상세페이지처럼 통일한다.\n- 경쟁사 이미지의 설득 원리만 참고하고 문구·레이아웃·상표를 복제하지 않는다.\n- 확인되지 않은 수치·효과·인증은 넣지 않는다.\n- 정확한 한글만 사용하고 중국어·임의 문자·오탈자를 금지한다.\n\n[제작 순서]\n아래 SECTION 01부터 마지막 섹션까지 순서대로 하나도 빠짐없이 제작한다. 각 섹션을 완성할 때마다 제품 외형 일관성과 한글 오탈자를 검수한다.\n\n${sections}`;
   }, [result]);
   const allText = useMemo(() => {
-    if (tab === "thumbnail") return result.thumbnails.map((item) => `${item.title}\n\n${item.prompt}`).join("\n\n──────────\n\n");
+    if (tab === "thumbnail") return thumbnailMasterPrompt;
     if (tab === "detail") return detailMasterPrompt;
     return `${result.copy_draft.hero}\n${result.copy_draft.subcopy}\n\n${result.copy_draft.bullets.map((item) => `• ${item}`).join("\n")}\n\n${result.copy_draft.trust_copy}\n${result.copy_draft.cta}`;
-  }, [detailMasterPrompt, result, tab]);
+  }, [detailMasterPrompt, result, tab, thumbnailMasterPrompt]);
 
   return (
     <section className="output-section" id="results">
@@ -522,6 +660,7 @@ function OutputPanel({
           <span className={`mode-pill ${result.mode === "demo" ? "demo" : "ai"}`}>
             {result.mode === "demo" ? "데모 초안" : "AI 이미지 분석 완료"}
           </span>
+          <CopyButton text={thumbnailMasterPrompt} label="썸네일 전체 한번에 복사" />
           <CopyButton text={detailMasterPrompt} label="상세페이지 전체 한번에 복사" />
         </div>
       </div>
@@ -559,10 +698,20 @@ function OutputPanel({
             <button className={tab === "copy" ? "active" : ""} onClick={() => setTab("copy")}>
               한국어 카피 <span>1</span>
             </button>
+            <button className={tab === "gallery" ? "active" : ""} onClick={() => setTab("gallery")}>
+              제작 이미지 <span>{Object.keys(generatedThumbnails).length + Object.keys(generatedDetails).length}</span>
+            </button>
           </div>
 
           {tab === "thumbnail" && (
             <div className="prompt-list">
+              <div className="batch-create-bar">
+                <div><span>THUMBNAIL SET</span><strong>썸네일 전체 이미지를 순서대로 생성</strong><p>각 안은 독립 파일로 저장되고 생성 후 개별 편집할 수 있습니다.</p></div>
+                <button type="button" className="direct-image-button batch-button" onClick={() => void generateAll("thumbnail")} disabled={Boolean(batchProgress)}>
+                  <span>{batchProgress?.type === "thumbnail" ? "◌" : "✦"}</span>
+                  {batchProgress?.type === "thumbnail" ? `${batchProgress.current} / ${batchProgress.total} 생성 중` : "썸네일 전체 이미지 바로 만들기"}
+                </button>
+              </div>
               {result.thumbnails.map((item, index) => (
                 <article className="prompt-card" key={`${item.title}-${index}`}>
                   <div className="prompt-card-head">
@@ -570,7 +719,7 @@ function OutputPanel({
                     <div><h3>{item.title}</h3><p>{item.goal}</p></div>
                     <div className="prompt-actions">
                       <CopyButton text={item.prompt} />
-                      <DirectImageButton prompt={item.prompt} productImages={productImages} format="thumbnail" title={item.title} onNotice={onNotice} />
+                      <DirectImageButton prompt={item.prompt} productImages={productImages} format="thumbnail" title={item.title} imageUrl={generatedThumbnails[index]} onGenerated={(image) => setGeneratedThumbnails((current) => ({ ...current, [index]: image }))} onNotice={onNotice} />
                     </div>
                   </div>
                   <pre>{item.prompt}</pre>
@@ -583,7 +732,14 @@ function OutputPanel({
             <div className="section-list">
               <div className="detail-master-bar">
                 <div><span>ONE-PASTE DETAIL PROMPT</span><strong>전체 섹션을 하나의 프롬프트로 묶었습니다</strong><p>제품 사진과 함께 ChatGPT에 한 번만 붙여넣으세요.</p></div>
-                <CopyButton text={detailMasterPrompt} label="상세 전체 프롬프트 복사" />
+                <div className="detail-master-actions">
+                  <CopyButton text={detailMasterPrompt} label="상세 전체 프롬프트 복사" />
+                  <button type="button" className="direct-image-button" onClick={() => void generateAll("detail")} disabled={Boolean(batchProgress)}>
+                    <span>{batchProgress?.type === "detail" ? "◌" : "✦"}</span>
+                    {batchProgress?.type === "detail" ? `${batchProgress.current} / ${batchProgress.total} 생성 중` : "상세 전체 이미지 바로 만들기"}
+                  </button>
+                  <button type="button" className="stitch-button" onClick={() => void stitchSelectedDetails()} disabled={!selectedDetails.length}>선택 페이지 길게 붙이기 ({selectedDetails.length})</button>
+                </div>
               </div>
               {result.detail_sections.map((item, index) => {
                 const isOpen = openSections.includes(index);
@@ -604,10 +760,21 @@ function OutputPanel({
                         <div className="prompt-inline">
                           <div className="prompt-inline-actions">
                             <CopyButton text={item.prompt} />
-                            <DirectImageButton prompt={item.prompt} productImages={productImages} format="detail" title={item.title} onNotice={onNotice} />
+                            <DirectImageButton prompt={item.prompt} productImages={productImages} format="detail" title={item.title} imageUrl={generatedDetails[index]} onGenerated={(image) => {
+                              setGeneratedDetails((current) => ({ ...current, [index]: image }));
+                              setSelectedDetails((current) => current.includes(index) ? current : [...current, index]);
+                            }} onNotice={onNotice} />
                           </div>
                           <pre>{item.prompt}</pre>
                         </div>
+                      </div>
+                    )}
+                    {generatedDetails[index] && (
+                      <div className="generated-section-row">
+                        <label><input type="checkbox" checked={selectedDetails.includes(index)} onChange={(event) => setSelectedDetails((current) => event.target.checked ? [...new Set([...current, index])] : current.filter((value) => value !== index))} /> 긴 이미지에 포함</label>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={generatedDetails[index]} alt={`${item.title} 생성 미리보기`} />
+                        <span>SECTION {String(item.number).padStart(2, "0")} 생성 완료 · 결과 보기 버튼에서 개별 편집</span>
                       </div>
                     )}
                   </article>
@@ -628,6 +795,55 @@ function OutputPanel({
                 {result.strategy.review_insights.slice(0, 3).map((item, index) => <div key={item}><span>리뷰 인사이트 {index + 1}</span><p>{item}</p></div>)}
               </div>
             </article>
+          )}
+
+          {tab === "gallery" && (
+            <section className="generated-gallery">
+              <div className="gallery-heading">
+                <div><span>CREATED IMAGE LIBRARY</span><h3>제작 이미지 보관함</h3><p>생성된 이미지를 한곳에서 확인하고, 이미지마다 수정 요청이나 프롬프트 보완 내용을 입력할 수 있습니다.</p></div>
+                <div><strong>{Object.keys(generatedThumbnails).length}</strong><span>썸네일</span><strong>{Object.keys(generatedDetails).length}</strong><span>상세페이지</span></div>
+              </div>
+              {Object.keys(generatedThumbnails).length + Object.keys(generatedDetails).length === 0 ? (
+                <div className="gallery-empty"><span>✦</span><strong>아직 제작된 이미지가 없습니다</strong><p>썸네일 또는 상세페이지 탭에서 전체·개별 이미지 만들기를 실행해주세요.</p></div>
+              ) : (
+                <div className="gallery-grid">
+                  {Object.entries(generatedThumbnails).map(([rawIndex, image]) => {
+                    const index = Number(rawIndex);
+                    const key = `thumbnail-${index}`;
+                    const item = result.thumbnails[index];
+                    return (
+                      <article className="gallery-card" key={key}>
+                        <div className="gallery-card-label"><span>THUMBNAIL {String(index + 1).padStart(2, "0")}</span><strong>{item.title}</strong></div>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={image} alt={`${item.title} 제작 이미지`} />
+                        <div className="gallery-card-body">
+                          <textarea value={galleryEdits[key] ?? ""} onChange={(event) => setGalleryEdits((current) => ({ ...current, [key]: event.target.value }))} placeholder="수정 요청 또는 프롬프트 보완 내용을 입력하세요. 예: 제품은 유지하고 배경을 더 밝게, 로고 크기 15% 축소" />
+                          <div><a href={image} download={`moriva-thumbnail-${index + 1}.webp`}>다운로드</a><button type="button" onClick={() => void editGalleryImage("thumbnail", index)} disabled={galleryLoading === key}>{galleryLoading === key ? "수정 중…" : "수정해서 다시 만들기"}</button></div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                  {Object.entries(generatedDetails).map(([rawIndex, image]) => {
+                    const index = Number(rawIndex);
+                    const key = `detail-${index}`;
+                    const item = result.detail_sections[index];
+                    return (
+                      <article className="gallery-card detail" key={key}>
+                        <div className="gallery-card-label"><span>DETAIL SECTION {String(item.number).padStart(2, "0")}</span><strong>{item.title}</strong></div>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={image} alt={`${item.title} 제작 이미지`} />
+                        <div className="gallery-card-body">
+                          <label><input type="checkbox" checked={selectedDetails.includes(index)} onChange={(event) => setSelectedDetails((current) => event.target.checked ? [...new Set([...current, index])] : current.filter((value) => value !== index))} /> 긴 상세페이지에 포함</label>
+                          <textarea value={galleryEdits[key] ?? ""} onChange={(event) => setGalleryEdits((current) => ({ ...current, [key]: event.target.value }))} placeholder="수정 요청 또는 프롬프트 보완 내용을 입력하세요. 예: 헤드라인은 유지하고 제품 사진을 더 크게 배치" />
+                          <div><a href={image} download={`moriva-detail-${item.number}.webp`}>다운로드</a><button type="button" onClick={() => void editGalleryImage("detail", index)} disabled={galleryLoading === key}>{galleryLoading === key ? "수정 중…" : "수정해서 다시 만들기"}</button></div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+              {Object.keys(generatedDetails).length > 0 && <button type="button" className="gallery-stitch" onClick={() => void stitchSelectedDetails()} disabled={!selectedDetails.length}>선택한 상세페이지 {selectedDetails.length}개 길게 붙여 다운로드</button>}
+            </section>
           )}
         </div>
       </div>
