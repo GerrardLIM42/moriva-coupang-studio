@@ -10,11 +10,26 @@ import {
   useRef,
   useState,
 } from "react";
+import type { User } from "@supabase/supabase-js";
+import { getSupabase, isCloudConfigured, ownerEmail } from "@/lib/supabase";
 
 type BucketKey = "product" | "competitorThumbnail" | "competitorDetail" | "review";
 type AiStatus = "checking" | "connected" | "missing" | "error";
 type OutputTab = "thumbnail" | "detail" | "copy" | "gallery";
 type ImageFormat = "thumbnail" | "detail";
+type FontScale = "compact" | "default" | "comfortable";
+type CloudProject = { id: string; name: string; updated_at: string };
+type StoredImage = Omit<ImageAsset, "dataUrl"> & { path: string };
+type StoredState = {
+  images: Record<BucketKey, StoredImage[]>;
+  reviewText: string;
+  tone: string;
+  sectionCount: number;
+  thumbnailCount: number;
+  result: AnalysisResult | null;
+  generatedThumbnails: Record<number, string>;
+  generatedDetails: Record<number, string>;
+};
 
 type ImageAsset = {
   id: string;
@@ -117,6 +132,24 @@ const TONES = [
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function dataUrlToBlob(dataUrl: string) {
+  const [header, encoded] = dataUrl.split(",");
+  const mime = header.match(/data:(.*?);/)?.[1] || "image/webp";
+  const binary = window.atob(encoded);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type: mime });
+}
+
+function blobToDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("저장 이미지를 불러오지 못했습니다."));
+    reader.readAsDataURL(blob);
+  });
 }
 
 function readFileAsDataUrl(file: File) {
@@ -519,15 +552,21 @@ function OutputPanel({
   result,
   productImages,
   onNotice,
+  generatedThumbnails,
+  setGeneratedThumbnails,
+  generatedDetails,
+  setGeneratedDetails,
 }: {
   result: AnalysisResult;
   productImages: ImageAsset[];
   onNotice: (message: string) => void;
+  generatedThumbnails: Record<number, string>;
+  setGeneratedThumbnails: React.Dispatch<React.SetStateAction<Record<number, string>>>;
+  generatedDetails: Record<number, string>;
+  setGeneratedDetails: React.Dispatch<React.SetStateAction<Record<number, string>>>;
 }) {
   const [tab, setTab] = useState<OutputTab>("thumbnail");
   const [openSections, setOpenSections] = useState<number[]>([0]);
-  const [generatedThumbnails, setGeneratedThumbnails] = useState<Record<number, string>>({});
-  const [generatedDetails, setGeneratedDetails] = useState<Record<number, string>>({});
   const [selectedDetails, setSelectedDetails] = useState<number[]>([]);
   const [batchProgress, setBatchProgress] = useState<{ type: ImageFormat; current: number; total: number } | null>(null);
   const [galleryEdits, setGalleryEdits] = useState<Record<string, string>>({});
@@ -863,6 +902,16 @@ export default function Home() {
   const [generating, setGenerating] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [aiStatus, setAiStatus] = useState<AiStatus>("checking");
+  const [fontScale, setFontScale] = useState<FontScale>("default");
+  const [generatedThumbnails, setGeneratedThumbnails] = useState<Record<number, string>>({});
+  const [generatedDetails, setGeneratedDetails] = useState<Record<number, string>>({});
+  const [cloudOpen, setCloudOpen] = useState(false);
+  const [cloudBusy, setCloudBusy] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [loginEmail, setLoginEmail] = useState(ownerEmail());
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [projectName, setProjectName] = useState("새 MORIVA 프로젝트");
+  const [projects, setProjects] = useState<CloudProject[]>([]);
 
   const counts = useMemo(() => ({
     product: images.product.length,
@@ -877,6 +926,116 @@ export default function Home() {
     setNotice(message);
     window.setTimeout(() => setNotice(null), 3200);
   }, []);
+
+  const refreshProjects = useCallback(async () => {
+    const supabase = getSupabase();
+    if (!supabase) return;
+    const { data, error } = await supabase.from("projects").select("id,name,updated_at").order("updated_at", { ascending: false });
+    if (error) throw error;
+    setProjects((data ?? []) as CloudProject[]);
+  }, []);
+
+  useEffect(() => {
+    const supabase = getSupabase();
+    if (!supabase) return;
+    void supabase.auth.getUser().then(({ data }) => setUser(data.user));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => setUser(session?.user ?? null));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (user) void refreshProjects().catch(() => showNotice("저장 프로젝트 목록을 불러오지 못했습니다."));
+  }, [refreshProjects, showNotice, user]);
+
+  const sendLoginLink = async () => {
+    const supabase = getSupabase();
+    if (!supabase) return showNotice("먼저 Supabase 환경 변수를 연결해주세요.");
+    const allowed = ownerEmail();
+    if (!loginEmail.trim() || (allowed && loginEmail.trim().toLowerCase() !== allowed)) return showNotice("등록된 본인 이메일만 사용할 수 있습니다.");
+    setCloudBusy(true);
+    const { error } = await supabase.auth.signInWithOtp({ email: loginEmail.trim(), options: { emailRedirectTo: window.location.origin } });
+    setCloudBusy(false);
+    showNotice(error ? error.message : "로그인 링크를 이메일로 보냈습니다.");
+  };
+
+  const uploadDataUrl = async (path: string, dataUrl: string) => {
+    const supabase = getSupabase();
+    if (!supabase) throw new Error("클라우드가 연결되지 않았습니다.");
+    const { error } = await supabase.storage.from("moriva-projects").upload(path, dataUrlToBlob(dataUrl), { upsert: true, contentType: dataUrl.match(/data:(.*?);/)?.[1] || "image/webp" });
+    if (error) throw error;
+    return path;
+  };
+
+  const downloadDataUrl = async (path: string) => {
+    const supabase = getSupabase();
+    if (!supabase) throw new Error("클라우드가 연결되지 않았습니다.");
+    const { data, error } = await supabase.storage.from("moriva-projects").download(path);
+    if (error) throw error;
+    return blobToDataUrl(data);
+  };
+
+  const saveProject = async () => {
+    const supabase = getSupabase();
+    if (!supabase || !user) return setCloudOpen(true);
+    setCloudBusy(true);
+    try {
+      const nextId = projectId ?? window.crypto.randomUUID();
+      const storedImages = {} as Record<BucketKey, StoredImage[]>;
+      for (const bucket of Object.keys(images) as BucketKey[]) {
+        storedImages[bucket] = await Promise.all(images[bucket].map(async ({ dataUrl, ...asset }) => ({
+          ...asset,
+          path: await uploadDataUrl(`${user.id}/${nextId}/inputs/${bucket}/${asset.id}.webp`, dataUrl),
+        })));
+      }
+      const storedThumbs: Record<number, string> = {};
+      for (const [index, dataUrl] of Object.entries(generatedThumbnails)) storedThumbs[Number(index)] = await uploadDataUrl(`${user.id}/${nextId}/generated/thumbnail-${index}.webp`, dataUrl);
+      const storedDetails: Record<number, string> = {};
+      for (const [index, dataUrl] of Object.entries(generatedDetails)) storedDetails[Number(index)] = await uploadDataUrl(`${user.id}/${nextId}/generated/detail-${index}.webp`, dataUrl);
+      const state: StoredState = { images: storedImages, reviewText, tone, sectionCount, thumbnailCount, result, generatedThumbnails: storedThumbs, generatedDetails: storedDetails };
+      const { error } = await supabase.from("projects").upsert({ id: nextId, user_id: user.id, name: projectName.trim() || "새 MORIVA 프로젝트", state, updated_at: new Date().toISOString() });
+      if (error) throw error;
+      setProjectId(nextId);
+      await refreshProjects();
+      showNotice("프로젝트를 클라우드에 저장했습니다.");
+    } catch (error) {
+      showNotice(error instanceof Error ? `저장 실패: ${error.message}` : "프로젝트를 저장하지 못했습니다.");
+    } finally { setCloudBusy(false); }
+  };
+
+  const loadProject = async (id: string) => {
+    const supabase = getSupabase();
+    if (!supabase || !user) return;
+    setCloudBusy(true);
+    try {
+      const { data, error } = await supabase.from("projects").select("id,name,state").eq("id", id).single();
+      if (error) throw error;
+      const state = data.state as StoredState;
+      const restored = {} as Record<BucketKey, ImageAsset[]>;
+      for (const bucket of Object.keys(state.images) as BucketKey[]) restored[bucket] = await Promise.all(state.images[bucket].map(async ({ path, ...asset }) => ({ ...asset, dataUrl: await downloadDataUrl(path) })));
+      const thumbs: Record<number, string> = {};
+      for (const [index, path] of Object.entries(state.generatedThumbnails ?? {})) thumbs[Number(index)] = await downloadDataUrl(path);
+      const details: Record<number, string> = {};
+      for (const [index, path] of Object.entries(state.generatedDetails ?? {})) details[Number(index)] = await downloadDataUrl(path);
+      setImages(restored); setReviewText(state.reviewText ?? ""); setTone(state.tone ?? "conversion"); setSectionCount(state.sectionCount ?? 8); setThumbnailCount(state.thumbnailCount ?? 3); setResult(state.result ?? null); setGeneratedThumbnails(thumbs); setGeneratedDetails(details); setProjectId(data.id); setProjectName(data.name); setCloudOpen(false);
+      showNotice("저장된 프로젝트를 불러왔습니다.");
+    } catch (error) {
+      showNotice(error instanceof Error ? `불러오기 실패: ${error.message}` : "프로젝트를 불러오지 못했습니다.");
+    } finally { setCloudBusy(false); }
+  };
+
+  const newProject = () => {
+    setProjectId(null); setProjectName("새 MORIVA 프로젝트"); setImages({ product: [], competitorThumbnail: [], competitorDetail: [], review: [] }); setReviewText(""); setResult(null); setGeneratedThumbnails({}); setGeneratedDetails({}); setCloudOpen(false); showNotice("새 프로젝트를 시작했습니다.");
+  };
+
+  useEffect(() => {
+    const savedScale = window.localStorage.getItem("moriva-font-scale") as FontScale | null;
+    if (savedScale === "compact" || savedScale === "default" || savedScale === "comfortable") setFontScale(savedScale);
+  }, []);
+
+  const changeFontScale = (scale: FontScale) => {
+    setFontScale(scale);
+    window.localStorage.setItem("moriva-font-scale", scale);
+  };
 
   useEffect(() => {
     let active = true;
@@ -983,7 +1142,7 @@ export default function Home() {
   };
 
   return (
-    <main>
+    <main className={`font-scale-${fontScale}`}>
       <header className="site-header">
         <a className="brand" href="#top" aria-label="MORIVA Prompt Studio 홈">
           <span className="brand-logo-crop">
@@ -994,6 +1153,14 @@ export default function Home() {
         </a>
         <div className="header-center"><span>쿠팡 로켓그로스</span><strong>이미지 콘텐츠 빌더</strong></div>
         <div className="header-actions">
+          <button type="button" className={`cloud-button ${user ? "connected" : ""}`} onClick={() => setCloudOpen(true)}>
+            <span>{user ? "●" : "☁"}</span>{user ? (projectId ? "저장됨" : "프로젝트 저장") : "클라우드 저장"}
+          </button>
+          <div className="font-scale-control" role="group" aria-label="페이지 글자 크기 조절">
+            <button type="button" className={fontScale === "compact" ? "active" : ""} onClick={() => changeFontScale("compact")} aria-label="글자 작게">가−</button>
+            <button type="button" className={fontScale === "default" ? "active" : ""} onClick={() => changeFontScale("default")} aria-label="글자 기본">가</button>
+            <button type="button" className={fontScale === "comfortable" ? "active" : ""} onClick={() => changeFontScale("comfortable")} aria-label="글자 크게">가＋</button>
+          </div>
           <button type="button" className="help-button" onClick={() => showNotice("각 영역을 클릭한 뒤 Ctrl+V로 이미지를 붙여넣을 수 있습니다.")}>?</button>
           <span className="save-state"><i></i> MORIVA BRAND SYSTEM</span>
         </div>
@@ -1102,12 +1269,31 @@ export default function Home() {
               <div><strong>{generating ? "이미지를 읽고 있습니다…" : "프롬프트 자동 생성"}</strong><small>{generating ? "제품·경쟁사·리뷰를 함께 분석 중" : "썸네일 + 상세페이지 + 카피"}</small></div>
               <b>→</b>
             </button>
-            <div className="privacy-note"><span>✓</span><p>업로드한 이미지는 분석 요청에만 사용되며 앱에 영구 저장하지 않습니다.</p></div>
+            <div className="privacy-note"><span>✓</span><p>클라우드 저장을 실행한 프로젝트만 본인 전용 저장소에 보관됩니다.</p></div>
           </aside>
         </section>
 
-        {result && <OutputPanel result={result} productImages={images.product} onNotice={showNotice} />}
+        {result && <OutputPanel result={result} productImages={images.product} onNotice={showNotice} generatedThumbnails={generatedThumbnails} setGeneratedThumbnails={setGeneratedThumbnails} generatedDetails={generatedDetails} setGeneratedDetails={setGeneratedDetails} />}
       </div>
+
+      {cloudOpen && (
+        <div className="cloud-overlay" role="dialog" aria-modal="true" aria-label="개인 클라우드 프로젝트">
+          <section className="cloud-panel">
+            <div className="cloud-panel-head"><div><span>PRIVATE CLOUD</span><strong>내 MORIVA 프로젝트</strong></div><button type="button" onClick={() => setCloudOpen(false)} aria-label="닫기">×</button></div>
+            {!isCloudConfigured() ? (
+              <div className="cloud-setup"><span>1</span><h3>클라우드 연결 준비가 필요합니다</h3><p>Supabase 프로젝트를 만든 뒤 아래 환경 변수 3개를 Vercel에 등록하면 이 화면에서 로그인과 저장을 사용할 수 있습니다.</p><code>NEXT_PUBLIC_SUPABASE_URL</code><code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code><code>NEXT_PUBLIC_OWNER_EMAIL</code><small>저장소에 포함된 supabase/schema.sql도 Supabase SQL Editor에서 한 번 실행해야 합니다.</small></div>
+            ) : !user ? (
+              <div className="cloud-login"><h3>본인 이메일로 로그인</h3><p>다른 컴퓨터에서도 같은 이메일로 로그인하면 저장 프로젝트를 그대로 불러올 수 있습니다.</p><input type="email" value={loginEmail} onChange={(event) => setLoginEmail(event.target.value)} placeholder="본인 이메일" /><button type="button" onClick={() => void sendLoginLink()} disabled={cloudBusy}>{cloudBusy ? "전송 중…" : "이메일로 로그인 링크 받기"}</button></div>
+            ) : (
+              <>
+                <div className="cloud-account"><div><span>로그인 계정</span><strong>{user.email}</strong></div><button type="button" onClick={() => void getSupabase()?.auth.signOut()}>로그아웃</button></div>
+                <div className="cloud-save-box"><label htmlFor="project-name">현재 프로젝트 이름</label><input id="project-name" value={projectName} onChange={(event) => setProjectName(event.target.value)} /><div><button type="button" className="secondary" onClick={newProject}>＋ 새 프로젝트</button><button type="button" onClick={() => void saveProject()} disabled={cloudBusy}>{cloudBusy ? "저장 중…" : projectId ? "현재 프로젝트 저장" : "새 프로젝트로 저장"}</button></div></div>
+                <div className="cloud-project-list"><div className="cloud-list-title"><strong>저장된 프로젝트</strong><span>{projects.length}개</span></div>{projects.length === 0 ? <p className="cloud-empty">아직 저장된 프로젝트가 없습니다.</p> : projects.map((project) => <button type="button" key={project.id} className={project.id === projectId ? "active" : ""} onClick={() => void loadProject(project.id)} disabled={cloudBusy}><div><strong>{project.name}</strong><span>{new Date(project.updated_at).toLocaleString("ko-KR")}</span></div><b>{project.id === projectId ? "현재 열림" : "불러오기"}</b></button>)}</div>
+              </>
+            )}
+          </section>
+        </div>
+      )}
 
       {notice && <div className="toast" role="status"><span>✓</span>{notice}</div>}
       {generating && <div className="analysis-overlay" aria-live="polite"><div className="analysis-modal"><div className="scan-orb"><span></span></div><strong>이미지에서 판매 단서를 찾고 있습니다</strong><p>제품 구조 → 경쟁사 설득 방식 → 리뷰 언어 순으로 분석합니다.</p><div className="loading-line"><i></i></div></div></div>}

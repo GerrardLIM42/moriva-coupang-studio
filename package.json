@@ -19,6 +19,7 @@
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.57.4",
     "drizzle-orm": "0.45.2",
     "next": "16.2.6",
     "react": "19.2.6",
@@ -43,5 +44,5 @@
     "wrangler": "4.92.0"
   },
   "type": "module",
-  "displayName": "MORIVA \ucfe0\ud321 \ucf58\ud150\uce20 \uc2a4\ud29c\ub514\uc624"
+  "displayName": "MORIVA 쿠팡 콘텐츠 스튜디오"
 }
