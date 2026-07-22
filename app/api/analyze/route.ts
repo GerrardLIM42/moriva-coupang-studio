@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 type AnalyzeBody = {
+  brandImage?: string;
   images?: {
     product?: string[];
     competitorThumbnail?: string[];
@@ -126,6 +127,7 @@ export async function POST(request: NextRequest) {
   const competitorDetail = (body.images?.competitorDetail ?? []).filter(validDataUrl).slice(0, MAX_IMAGES_PER_BUCKET);
   const review = (body.images?.review ?? []).filter(validDataUrl).slice(0, MAX_IMAGES_PER_BUCKET);
   const reviewText = typeof body.reviewText === "string" ? body.reviewText.trim().slice(0, 12000) : "";
+  const brandImage = validDataUrl(body.brandImage) ? body.brandImage : null;
   if (!product.length) return NextResponse.json({ error: "제품 사진이 필요합니다." }, { status: 400 });
 
   const sectionCount = Math.min(10, Math.max(6, Number(body.settings?.sectionCount ?? 8)));
@@ -147,7 +149,10 @@ export async function POST(request: NextRequest) {
 - 각 이미지 생성 프롬프트는 @이미지 만들기로 시작하고, 목적/구도/조명/제품 보존/텍스트 안전영역/금지사항을 포함한다.
 - 썸네일은 1:1 1080×1080px 기준, 제품 전체가 잘리지 않게 한다.
 - 상세페이지 섹션은 폭 780px 기준이며 모바일 가독성을 우선한다.
+- 제공된 MORIVA 브랜드 가이드를 공식 기준으로 사용한다. 브랜드명은 영문 ‘MORIVA’, 한글 ‘모리바’, 슬로건은 ‘Better Life, Better Move’로 정확히 표기한다.
+- M 심볼과 워드마크의 형태·비율·간격을 임의로 재설계하지 않는다. 브랜드를 넣는 모든 썸네일과 상세 섹션 프롬프트에 로고 위치, 안전 여백, 가독성 규칙을 명시한다.
 - MORIVA 브랜드 팔레트인 딥 네이비 #071A35, 화이트, 골드 #C9961A를 일관되게 적용한다.
+- 썸네일에서는 제품이 주인공이 되도록 로고를 작고 절제되게 배치하고, 상세페이지에서는 섹션 흐름에 맞춰 헤더·푸터·신뢰 영역에 일관되게 적용한다.
 - 한글은 짧고 자연스럽게 쓴다. 중국어, 임의 문자, 오탈자를 금지한다.
 - 상위 판매자의 설득 원리는 참고하되 결과는 독창적으로 재구성한다.`;
 
@@ -160,6 +165,10 @@ export async function POST(request: NextRequest) {
     },
     ...imageItems(product, "high"),
   ];
+  if (brandImage) {
+    content.push({ type: "input_text", text: "다음 이미지는 MORIVA의 공식 브랜드 가이드다. M 심볼, MORIVA/모리바 워드마크, Better Life, Better Move 슬로건, 네이비·골드 색상을 모든 결과 프롬프트의 브랜드 기준으로 사용하라." });
+    content.push(...imageItems([brandImage], "high"));
+  }
   if (competitorThumbnail.length) {
     content.push({ type: "input_text", text: `다음은 경쟁사 썸네일 ${competitorThumbnail.length}장이다. 검색 결과에서의 제품 크기, 구도, 시선 집중 방식만 썸네일 기획에 참고하라.` });
     content.push(...imageItems(competitorThumbnail, "high"));
